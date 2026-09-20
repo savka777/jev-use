@@ -18,6 +18,7 @@ struct JevDesktopApp: App {
             Button("Cancel current command") { model.cancel() }.disabled(!model.isBusy)
             Divider()
             Text("Hold ⌃⌥Space to speak")
+            Toggle("Wake phrase: “\(model.wake.phrase)”", isOn: Binding(get: { model.wake.isEnabled }, set: { model.wake.setEnabled($0); model.objectWillChange.send() }))
             Button("Quit Desktop Voice") { NSApplication.shared.terminate(nil) }.keyboardShortcut("q")
         }
     }
@@ -52,6 +53,7 @@ final class AppModel: ObservableObject {
     @Published var timing = ""
 
     let speech = SpeechInput()
+    let wake = WakeWord()
     let systemAudio = SystemAudioMonitor()
     private let hotKey = HotKey()
     private var key: String?
@@ -123,6 +125,31 @@ final class AppModel: ObservableObject {
             self.run(text, in: target, started: self.releasedAt ?? Date())
         }
         speech.onFailure = { [weak self] message in self?.fail(message) }
+        wake.onArmed = { [weak self] in
+            guard let self else { return }
+            self.transcript = ""
+            self.timing = ""
+            self.headline = "Listening…"
+            self.detail = "Say the command. It runs when you stop speaking."
+            self.showOverlay()
+        }
+        wake.onPartial = { [weak self] text in
+            guard let self else { return }
+            self.transcript = text
+            self.wordTask?.cancel(); self.wordTask = nil
+            self.word = text.split(whereSeparator: \.isWhitespace).last.map(String.init)
+        }
+        wake.onDisarmed = { [weak self] in
+            guard let self, !self.isBusy else { return }
+            self.headline = "Ready for a command"
+            self.detail = "No command followed the wake phrase."
+            self.clearPixels()
+        }
+        wake.onCommand = { [weak self] text in self?.runTyped(text) }
+        // Push-to-talk and a running command own the microphone and the screen.
+        $isBusy.removeDuplicates().sink { [weak self] busy in
+            if busy { self?.wake.suspend() } else { self?.wake.resume() }
+        }.store(in: &subscriptions)
         hotKey.onPress = { [weak self] in self?.beginSpeech() }
         hotKey.onRelease = { [weak self] in
             guard let self, self.capturing else { return }
@@ -213,6 +240,7 @@ final class AppModel: ObservableObject {
     func refreshPermissions() {
         accessibilityAllowed = Desktop.hasAccess
         speechAllowed = speech.hasPermissions
+        if speechAllowed && !isBusy { wake.start() }
     }
 
     private func prepare() -> NSRunningApplication? {
@@ -1218,6 +1246,7 @@ final class AppModel: ObservableObject {
         cancel(showStatus: false)
         keyTask?.cancel()
         systemAudio.stop()
+        wake.suspend()
         hotKey.unregister()
         if let appObserver { NSWorkspace.shared.notificationCenter.removeObserver(appObserver) }
         if let commandObserver { DistributedNotificationCenter.default().removeObserver(commandObserver) }
@@ -1229,6 +1258,8 @@ private struct SettingsView: View {
     @State private var key = ""
     @State private var plannerKey = ""
     @State private var command = ""
+    @State private var wakePhrase = UserDefaults.standard.string(forKey: WakeWord.phraseKey) ?? ""
+    @State private var wakeStatus = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -1280,6 +1311,18 @@ private struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Button("Done — use voice widget") { model.showVoiceWidget() }.disabled(!model.setupComplete)
             }
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Hands-free wake phrase").font(.headline)
+                HStack {
+                    Toggle("Listen for", isOn: Binding(get: { model.wake.isEnabled }, set: { model.wake.setEnabled($0); model.objectWillChange.send() }))
+                    TextField(WakeWord.defaultPhrase, text: $wakePhrase).textFieldStyle(.roundedBorder)
+                        .onSubmit { model.wake.setPhrase(wakePhrase) }
+                    Button("Set") { model.wake.setPhrase(wakePhrase) }
+                }
+                Text("Say the phrase, then the command; it runs when you stop speaking. The microphone stays open while this is on, and the listening runs on this Mac only. \(wakeStatus)")
+                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            .onReceive(model.wake.$status) { wakeStatus = $0 }
             Divider()
             VStack(alignment: .leading, spacing: 8) {
                 Text("Or type a command").font(.headline)

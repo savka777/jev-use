@@ -17,6 +17,8 @@ In setup: save your TypeSafe API key (stored in the Keychain), then allow Access
 
 Hold **Control–Option–Space**, speak, release. **Escape** cancels. Or type a command in the widget, or from a shell: `scripts/say.sh "Open Finder"`.
 
+Hands-free: turn on the wake phrase in Settings or the menu bar, then say "hey computer, open Finder". The command runs when you stop speaking. The phrase is listened for on-device only, and the microphone stays open while it is on.
+
 ## Examples
 
 - "Open Obsidian, create a new note and type hello"
